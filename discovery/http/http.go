@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-kit/log"
+	"github.com/go-kit/log/level"
 	"github.com/grafana/regexp"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/config"
@@ -111,6 +112,7 @@ type Discovery struct {
 	refreshInterval time.Duration
 	tgLastLength    int
 	metrics         *httpMetrics
+	logger          log.Logger
 }
 
 // NewDiscovery returns a new HTTP discovery for the given config.
@@ -135,6 +137,7 @@ func NewDiscovery(conf *SDConfig, logger log.Logger, clientOpts []config.HTTPCli
 		client:          client,
 		refreshInterval: time.Duration(conf.RefreshInterval), // Stored to be sent as headers.
 		metrics:         m,
+		logger:          logger,
 	}
 
 	d.Discovery = refresh.NewDiscovery(
@@ -157,6 +160,12 @@ func (d *Discovery) Refresh(ctx context.Context) ([]*targetgroup.Group, error) {
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Prometheus-Refresh-Interval-Seconds", strconv.FormatFloat(d.refreshInterval.Seconds(), 'f', -1, 64))
+
+	headerString := ""
+	for k, v := range req.Header {
+		headerString += k + ": " + strings.Join(v, ", ") + "; "
+	}
+	level.Info(d.logger).Log("msg", "HAS: Discovering HTTP "+req.Method+" "+d.url, "target", d.url, "headers", headerString, "headerSize", len(headerString))
 
 	resp, err := d.client.Do(req.WithContext(ctx))
 	if err != nil {

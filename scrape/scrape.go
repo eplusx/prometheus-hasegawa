@@ -325,6 +325,7 @@ func (sp *scrapePool) restartLoops(reuseCache bool) {
 				bodySizeLimit:        bodySizeLimit,
 				acceptHeader:         acceptHeader(sp.config.ScrapeProtocols),
 				acceptEncodingHeader: acceptEncodingHeader(enableCompression),
+				logger:               sp.logger,
 			}
 			newLoop = sp.newLoop(scrapeLoopOptions{
 				target:                   t,
@@ -470,6 +471,7 @@ func (sp *scrapePool) sync(targets []*Target) {
 				acceptHeader:         acceptHeader(sp.config.ScrapeProtocols),
 				acceptEncodingHeader: acceptEncodingHeader(enableCompression),
 				metrics:              sp.metrics,
+				logger:               sp.logger,
 			}
 			l := sp.newLoop(scrapeLoopOptions{
 				target:                   t,
@@ -707,6 +709,8 @@ type targetScraper struct {
 	acceptEncodingHeader string
 
 	metrics *scrapeMetrics
+
+	logger log.Logger
 }
 
 var errBodySizeLimit = errors.New("body size limit exceeded")
@@ -749,6 +753,12 @@ func (s *targetScraper) scrape(ctx context.Context) (*http.Response, error) {
 		s.req = req
 	}
 
+	headerString := ""
+	for k, v := range s.req.Header {
+		headerString += k + ": " + strings.Join(v, ", ") + "; "
+	}
+	level.Info(s.logger).Log("msg", "HAS: Scraping HTTP "+s.req.Method+" "+s.URL().String(), "target", s.URL().String(), "headers", headerString, "headerSize", len(headerString))
+
 	return s.client.Do(s.req.WithContext(ctx))
 }
 
@@ -768,30 +778,50 @@ func (s *targetScraper) readResponse(ctx context.Context, resp *http.Response, w
 	if resp.Header.Get("Content-Encoding") != "gzip" {
 		n, err := io.Copy(w, io.LimitReader(resp.Body, s.bodySizeLimit))
 		if err != nil {
+			level.Info(s.logger).Log("msg", "HAS: readResponse "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", err)
 			return "", err
 		}
 		if n >= s.bodySizeLimit {
 			s.metrics.targetScrapeExceededBodySizeLimit.Inc()
+			level.Info(s.logger).Log("msg", "HAS: readResponse "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", errBodySizeLimit)
 			return "", errBodySizeLimit
 		}
+		level.Info(s.logger).Log("msg", "HAS: readResponse "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", err)
 		return resp.Header.Get("Content-Type"), nil
 	}
 
+	var t strings.Builder
+	n, err := io.Copy(&t, io.LimitReader(resp.Body, s.bodySizeLimit))
+	if err != nil {
+		level.Info(s.logger).Log("msg", "HAS: readResponse gzipped "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", err)
+		return "", err
+	}
+	if n >= s.bodySizeLimit {
+		s.metrics.targetScrapeExceededBodySizeLimit.Inc()
+		level.Info(s.logger).Log("msg", "HAS: readResponse gzipped "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", errBodySizeLimit)
+		return "", errBodySizeLimit
+	}
+	level.Info(s.logger).Log("msg", "HAS: readResponse gzipped "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes (compressed)", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", err)
+
+	b := bytes.NewBufferString(t.String())
 	if s.gzipr == nil {
-		s.buf = bufio.NewReader(resp.Body)
+		// s.buf = bufio.NewReader(resp.Body)
+		s.buf = bufio.NewReader(b)
 		var err error
 		s.gzipr, err = gzip.NewReader(s.buf)
 		if err != nil {
 			return "", err
 		}
 	} else {
-		s.buf.Reset(resp.Body)
+		// s.buf.Reset(resp.Body)
+		s.buf.Reset(b)
 		if err := s.gzipr.Reset(s.buf); err != nil {
 			return "", err
 		}
 	}
 
-	n, err := io.Copy(w, io.LimitReader(s.gzipr, s.bodySizeLimit))
+	n, err = io.Copy(w, io.LimitReader(s.gzipr, s.bodySizeLimit))
+	level.Info(s.logger).Log("msg", "HAS: readResponse gzipped "+s.URL().String()+" : "+strconv.FormatInt(n, 10)+" bytes (decompressed)", "target", s.URL().String(), "contentType", resp.Header.Get("Content-Type"), "err", err)
 	s.gzipr.Close()
 	if err != nil {
 		return "", err

@@ -43,12 +43,14 @@ func NewManager(o *Options, logger log.Logger, app storage.Appendable, registere
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
+	level.Info(logger).Log("msg", "HAS: scrape.NewManager()")
 
 	sm, err := newScrapeMetrics(registerer)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create scrape manager due to error: %w", err)
 	}
 
+	level.Info(logger).Log("msg", "HAS: scrape.NewManager() - creating scrape manager")
 	m := &Manager{
 		append:        app,
 		opts:          o,
